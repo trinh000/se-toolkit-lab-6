@@ -33,7 +33,7 @@ def query_api(method, path, body=None):
     base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
     api_key = os.getenv("LMS_API_KEY")
     if not api_key: return "Error: LMS_API_KEY not set."
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"} if (key := api_key) else {}
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     try:
         with httpx.Client(timeout=20.0) as client:
@@ -62,8 +62,7 @@ CRITICAL INSTRUCTIONS:
 7. DATA: Use 'query_api' for database counts, analytics, or status codes.
 8. FINAL ANSWER: Submit ONLY via 'submit_answer'. Source must be 'wiki/file.md#anchor' or 'backend/app/file.py'.
 9. FORMAT: Final output must be valid JSON with 'answer' and 'source' fields.
-10. NO GUESSING: If you don't know the path, use 'list_files' to find it.
-"""
+10. NO GUESSING: If you don't know the path, use 'list_files' to find it."""
 
 def main():
     load_dotenv(".env.agent.secret")
@@ -77,17 +76,15 @@ def main():
     
     for i in range(15):
         try:
-            resp = client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice="auto")
+            resp = client.chat.completions.create(model=model, messages=msgs, tools=tools, tool_choice="auto")
             m = resp.choices[0].message
-            
             if not m.tool_calls:
                 if m.content:
-                    # Robust fallback if it didn't call submit_answer but gave text
                     print(json.dumps({"answer": m.content, "source": "unknown", "tool_calls": history}))
                     return
                 continue
             
-            messages.append(m)
+            msgs.append(m)
             for tc in m.tool_calls:
                 fn, arg_str = tc.function.name, tc.function.arguments
                 try: args = json.loads(arg_str)

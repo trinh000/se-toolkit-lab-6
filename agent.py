@@ -1,89 +1,73 @@
-import os
-import sys
-import json
-import httpx
+import os, sys, json, httpx
 from openai import OpenAI
 from dotenv import load_dotenv
 
 def get_abs_path(path):
-    project_root = os.path.abspath(os.getcwd())
-    abs_path = os.path.abspath(os.path.join(project_root, path))
-    if os.path.commonpath([project_root]) != os.path.commonpath([project_root, abs_path]):
-        raise PermissionError(f"Access denied: Path '{path}' is outside the project root.")
-    return abs_path
+    root = os.path.abspath(os.getcwd())
+    abs_p = os.path.abspath(os.path.join(root, path))
+    if os.path.commonpath([root]) != os.path.commonpath([root, abs_p]):
+        raise PermissionError("Path outside root")
+    return abs_p
 
 def list_files(path):
     try:
-        abs_path = get_abs_path(path)
-        if not os.path.isdir(abs_path): return f"Error: '{path}' is not a directory."
-        return "\n".join(os.listdir(abs_path))
-    except Exception as e: return f"Error: {e}"
+        p = get_abs_path(path)
+        return "\n".join(os.listdir(p)) if os.path.isdir(p) else f"Error: {path} not dir"
+    except Exception as e: return str(e)
 
 def read_file(path):
     try:
-        abs_path = get_abs_path(path)
-        if not os.path.isfile(abs_path): return f"Error: File '{path}' not found."
-        with open(abs_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            if len(content) > 10000: return content[:10000] + "\n\n[Content truncated...]"
-            return content
-    except Exception as e: return f"Error: {e}"
+        p = get_abs_path(path)
+        if not os.path.isfile(p): return f"Error: {path} not found"
+        with open(p, 'r', encoding='utf-8') as f:
+            c = f.read()
+            return (c[:10000] + "\n[Truncated]") if len(c) > 10000 else c
+    except Exception as e: return str(e)
 
 def query_api(method, path, body=None):
-    base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
-    api_key = os.getenv("LMS_API_KEY")
-    if not api_key: return "Error: LMS_API_KEY not set."
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+    base = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
+    key = os.getenv("LMS_API_KEY")
+    if not key: return "Error: LMS_API_KEY not set"
+    h = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    u = f"{base.rstrip('/')}/{path.lstrip('/')}"
     try:
-        with httpx.Client() as client:
-            if method.upper() == "GET": resp = client.get(url, headers=headers)
-            elif method.upper() == "POST": resp = client.post(url, headers=headers, content=body)
-            else: return f"Error: Unsupported method '{method}'."
-            return json.dumps({"status_code": resp.status_code, "body": resp.text})
-    except Exception as e: return f"Error: {e}"
+        with httpx.Client() as cl:
+            r = cl.get(u, headers=h) if method.upper()=="GET" else cl.post(u, headers=h, content=body)
+            return json.dumps({"status_code": r.status_code, "body": r.text})
+    except Exception as e: return str(e)
 
 tools = [
-    {"type": "function", "function": {"name": "list_files", "description": "List files in directory.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "read_file", "description": "Read file content.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "query_api", "description": "Call project API.", "parameters": {"type": "object", "properties": {"method": {"type": "string"}, "path": {"type": "string"}, "body": {"type": "string"}}, "required": ["method", "path"]}}}
+    {"type": "function", "function": {"name": "list_files", "description": "List files", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "read_file", "description": "Read file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "query_api", "description": "Call API", "parameters": {"type": "object", "properties": {"method": {"type": "string"}, "path": {"type": "string"}, "body": {"type": "string"}}, "required": ["method", "path"]}}}
 ]
 
 def main():
     load_dotenv(".env.agent.secret")
     load_dotenv(".env.docker.secret")
-    client = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_API_BASE"))
-    model = os.getenv("LLM_MODEL", "qwen3-coder-plus")
-    question = sys.argv[1] if len(sys.argv) > 1 else "Hi"
-    
-    messages = [{"role": "system", "content": "You are a System Agent. ALWAYS use tools to verify facts. Documentation is in wiki/, source code in backend/app/main.py. Your final response MUST be a JSON with 'answer' and 'source' fields. Source format: 'wiki/filename.md#anchor' or 'unknown'."}, {"role": "user", "content": question}]
-    history = []
-    
+    cl = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_API_BASE"))
+    m = os.getenv("LLM_MODEL", "qwen3-coder-plus")
+    q = sys.argv[1] if len(sys.argv) > 1 else "Hi"
+    msgs = [{"role": "system", "content": "You are a System Agent. ALWAYS use tools to find info. DO NOT guess. To answer, you MUST return a JSON object with 'answer' and 'source' (e.g. 'wiki/git.md#anchor'). Use 'unknown' if no source. No other text."}, {"role": "user", "content": q}]
+    hist = []
     for _ in range(10):
-        resp = client.chat.completions.create(model=model, messages=messages, tools=tools)
+        resp = cl.chat.completions.create(model=m, messages=msgs, tools=tools)
         msg = resp.choices[0].message
         if not msg.tool_calls:
-            content = msg.content or ""
             try:
-                # Find JSON in content
-                start = content.find('{')
-                end = content.rfind('}')
-                if start != -1 and end != -1:
-                    data = json.loads(content[start:end+1])
-                    print(json.dumps({"answer": data.get("answer"), "source": data.get("source", "unknown"), "tool_calls": history}))
-                else:
-                    print(json.dumps({"answer": content, "source": "unknown", "tool_calls": history}))
-            except:
-                print(json.dumps({"answer": content, "source": "unknown", "tool_calls": history}))
+                txt = msg.content or ""
+                s, e = txt.find('{'), txt.rfind('}')
+                if s != -1 and e != -1:
+                    d = json.loads(txt[s:e+1])
+                    print(json.dumps({"answer": d.get("answer"), "source": d.get("source", "unknown"), "tool_calls": hist}))
+                else: print(json.dumps({"answer": txt, "source": "unknown", "tool_calls": hist}))
+            except: print(json.dumps({"answer": msg.content, "source": "unknown", "tool_calls": hist}))
             return
-        
-        messages.append(msg)
+        msgs.append(msg)
         for tc in msg.tool_calls:
-            fn, args = tc.function.name, json.loads(tc.function.arguments)
-            res = list_files(args.get("path")) if fn == "list_files" else \
-                  read_file(args.get("path")) if fn == "read_file" else \
-                  query_api(args.get("method"), args.get("path"), args.get("body")) if fn == "query_api" else "Error"
-            history.append({"tool": fn, "args": args, "result": str(res)})
-            messages.append({"tool_call_id": tc.id, "role": "tool", "name": fn, "content": str(res)})
+            f, a = tc.function.name, json.loads(tc.function.arguments)
+            r = list_files(a["path"]) if f=="list_files" else read_file(a["path"]) if f=="read_file" else query_api(a["method"], a["path"], a.get("body"))
+            hist.append({"tool": f, "args": a, "result": str(r)})
+            msgs.append({"tool_call_id": tc.id, "role": "tool", "name": f, "content": str(r)})
 
 if __name__ == "__main__": main()

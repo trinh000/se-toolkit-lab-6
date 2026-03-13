@@ -46,8 +46,7 @@ def query_api(method, path, body=None):
 tools = [
     {"type": "function", "function": {"name": "list_files", "description": "List files in directory.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "read_file", "description": "Read file content.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "query_api", "description": "Call project API.", "parameters": {"type": "object", "properties": {"method": {"type": "string"}, "path": {"type": "string"}, "body": {"type": "string"}}, "required": ["method", "path"]}}},
-    {"type": "function", "function": {"name": "submit_answer", "description": "Submit final answer.", "parameters": {"type": "object", "properties": {"answer": {"type": "string"}, "source": {"type": "string"}}, "required": ["answer"]}}}
+    {"type": "function", "function": {"name": "query_api", "description": "Call project API.", "parameters": {"type": "object", "properties": {"method": {"type": "string"}, "path": {"type": "string"}, "body": {"type": "string"}}, "required": ["method", "path"]}}}
 ]
 
 def main():
@@ -57,27 +56,33 @@ def main():
     model = os.getenv("LLM_MODEL", "qwen3-coder-plus")
     question = sys.argv[1] if len(sys.argv) > 1 else "Hi"
     
-    messages = [{"role": "system", "content": "You are a System Agent. ALWAYS use tools to verify facts. Call submit_answer only when finished. Documentation is in wiki/, source code in backend/app/main.py. Source format: 'wiki/filename.md#anchor' or 'unknown'."}, {"role": "user", "content": question}]
+    messages = [{"role": "system", "content": "You are a System Agent. ALWAYS use tools to verify facts. Documentation is in wiki/, source code in backend/app/main.py. Your final response MUST be a JSON with 'answer' and 'source' fields. Source format: 'wiki/filename.md#anchor' or 'unknown'."}, {"role": "user", "content": question}]
     history = []
     
     for _ in range(10):
         resp = client.chat.completions.create(model=model, messages=messages, tools=tools)
         msg = resp.choices[0].message
         if not msg.tool_calls:
-            print(json.dumps({"answer": msg.content or "No answer", "tool_calls": history}))
+            content = msg.content or ""
+            try:
+                # Find JSON in content
+                start = content.find('{')
+                end = content.rfind('}')
+                if start != -1 and end != -1:
+                    data = json.loads(content[start:end+1])
+                    print(json.dumps({"answer": data.get("answer"), "source": data.get("source", "unknown"), "tool_calls": history}))
+                else:
+                    print(json.dumps({"answer": content, "source": "unknown", "tool_calls": history}))
+            except:
+                print(json.dumps({"answer": content, "source": "unknown", "tool_calls": history}))
             return
         
         messages.append(msg)
         for tc in msg.tool_calls:
             fn, args = tc.function.name, json.loads(tc.function.arguments)
-            if fn == "submit_answer":
-                print(json.dumps({"answer": args.get("answer"), "source": args.get("source", "unknown"), "tool_calls": history}))
-                return
-            
             res = list_files(args.get("path")) if fn == "list_files" else \
                   read_file(args.get("path")) if fn == "read_file" else \
                   query_api(args.get("method"), args.get("path"), args.get("body")) if fn == "query_api" else "Error"
-            
             history.append({"tool": fn, "args": args, "result": str(res)})
             messages.append({"tool_call_id": tc.id, "role": "tool", "name": fn, "content": str(res)})
 

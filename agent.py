@@ -2,6 +2,7 @@ import os, sys, json, httpx, time
 from openai import OpenAI
 from dotenv import load_dotenv
 
+# Security: Ensure paths are within the project root
 def get_abs_path(path):
     root = os.path.abspath(os.getcwd())
     abs_p = os.path.abspath(os.path.join(root, path))
@@ -21,7 +22,8 @@ def read_file(path):
         if not os.path.isfile(p): return f"Error: File '{path}' not found."
         with open(p, 'r', encoding='utf-8') as f:
             c = f.read()
-            return (c[:50000] + "\n[TRUNCATED]") if len(c) > 50000 else c
+            # Context-efficient truncation
+            return (c[:25000] + "\n[TRUNCATED]") if len(c) > 25000 else c
     except Exception as e: return str(e)
 
 def query_api(method, path, body=None):
@@ -31,58 +33,67 @@ def query_api(method, path, body=None):
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     try:
-        with httpx.Client(timeout=20.0) as cl:
-            r = cl.get(url, headers=headers) if method.upper() == "GET" else cl.post(url, headers=headers, content=body)
+        # Increase timeout for complex analytics queries
+        with httpx.Client(timeout=30.0) as cl:
+            if method.upper() == "GET": r = cl.get(url, headers=headers)
+            elif method.upper() == "POST": r = cl.post(url, headers=headers, content=body)
+            else: return f"Error: Unsupported method {method}"
             return json.dumps({"status_code": r.status_code, "body": r.text})
     except Exception as e: return f"API Error: {e}"
 
 tools = [
-    {"type": "function", "function": {"name": "list_files", "description": "List files", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "read_file", "description": "Read file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "query_api", "description": "Call API", "parameters": {"type": "object", "properties": {"method": {"type": "string"}, "path": {"type": "string"}, "body": {"type": "string"}}, "required": ["method", "path"]}}},
-    {"type": "function", "function": {"name": "submit_answer", "description": "Submit final answer", "parameters": {"type": "object", "properties": {"answer": {"type": "string"}, "source": {"type": "string"}}, "required": ["answer"]}}}
+    {"type": "function", "function": {"name": "list_files", "description": "List files in a directory.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "e.g. 'wiki' or 'backend/app/routers'"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "read_file", "description": "Read a file's content.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "e.g. 'wiki/vm.md' or 'backend/app/main.py'"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "query_api", "description": "Call the backend API.", "parameters": {"type": "object", "properties": {"method": {"type": "string", "enum": ["GET", "POST"]}, "path": {"type": "string", "description": "e.g. '/items/' or '/analytics/groups?lab=lab-01'"}, "body": {"type": "string"}}, "required": ["method", "path"]}}},
+    {"type": "function", "function": {"name": "submit_answer", "description": "Submit final answer.", "parameters": {"type": "object", "properties": {"answer": {"type": "string", "description": "The concise answer."}, "source": {"type": "string", "description": "e.g. 'wiki/file.md#anchor' or 'backend/app/main.py'"}}, "required": ["answer"]}}}
 ]
 
 SYSTEM_PROMPT = """You are a System Agent for 'se-toolkit-lab-6'.
-Answer using documentation (wiki/), code (backend/app/), and API.
+Answer questions using documentation (wiki/), code (backend/app/), and API.
 
-PROJECT STRUCTURE:
-- wiki/: github.md, vm.md, ssh.md, docker.md, git-workflow.md, backend.md, etc.
-- backend/app/: main.py, settings.py, auth.py, database.py, etl.py.
-- backend/app/routers/: analytics.py, interactions.py, items.py, learners.py, pipeline.py.
+API KNOWLEDGE:
+- /items/ : Get all items (labs, tasks).
+- /learners/ : Get all students.
+- /analytics/scores?lab=lab-XX : Score distribution.
+- /analytics/pass-rates?lab=lab-XX : Per-task stats.
+- /analytics/groups?lab=lab-XX : Stats by student group (group, avg_score, students).
+- /analytics/completion-rate?lab=lab-XX : % of students with score >= 60.
 
-CRITICAL:
-1. SPEED: Call MULTIPLE tools in one turn. Read ALL relevant files at once.
-2. VM: Read 'wiki/vm.md' for VM/SSH (mentions 'UniversityStudent' Wi-Fi, 'VPN').
-3. DOCKER: Read 'wiki/docker.md' for cleanup commands.
-4. ROUTERS: Read ALL files in 'backend/app/routers/' in ONE turn.
-5. SOURCE: ALWAYS use 'read_file' before answering. Cite as 'wiki/file.md#anchor'.
-6. FINAL: Call 'submit_answer' with JSON: {"answer": "...", "source": "..."}.
-"""
+CRITICAL RULES:
+1. ALWAYS read the relevant file/endpoint before answering. NEVER assume or guess.
+2. For VM/SSH questions, you MUST read 'wiki/vm.md'.
+3. For Docker questions, read 'wiki/docker.md'.
+4. For backend framework, read 'backend/app/main.py' and look for imports (FastAPI, etc).
+5. For 'distinct' counts, use /analytics/ endpoints or fetch lists and count.
+6. SOURCE: Cite exactly as 'wiki/filename.md#section' or 'backend/app/filename.py'.
+7. FINAL: You MUST call 'submit_answer' to finish."""
 
 def main():
     load_dotenv(".env.agent.secret"); load_dotenv(".env.docker.secret")
-    cl = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_API_BASE"))
-    m, q = os.getenv("LLM_MODEL", "qwen3-coder-plus"), (sys.argv[1] if len(sys.argv) > 1 else "Hi")
+    client = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_API_BASE"))
+    model, q = os.getenv("LLM_MODEL", "qwen3-coder-plus"), (sys.argv[1] if len(sys.argv) > 1 else "Hi")
     msgs, hist = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": q}], []
-    for _ in range(15):
+    
+    for i in range(15):
         try:
-            resp = cl.chat.completions.create(model=m, messages=msgs, tools=tools, tool_choice="auto")
-            msg = resp.choices[0].message
-            if not msg.tool_calls:
-                if msg.content:
-                    print(json.dumps({"answer": msg.content, "source": "unknown", "tool_calls": hist}))
+            resp = client.chat.completions.create(model=model, messages=msgs, tools=tools, tool_choice="auto")
+            m = resp.choices[0].message
+            if not m.tool_calls:
+                if m.content:
+                    print(json.dumps({"answer": m.content, "source": "unknown", "tool_calls": hist}))
                     return
                 continue
-            msgs.append(msg)
-            for tc in msg.tool_calls:
+            msgs.append(m)
+            for tc in m.tool_calls:
                 fn, arg_str = tc.function.name, tc.function.arguments
                 try: args = json.loads(arg_str)
                 except: args = {}
                 if fn == "submit_answer":
                     print(json.dumps({"answer": str(args.get("answer")), "source": str(args.get("source", "unknown")), "tool_calls": hist}))
                     return
-                res = list_files(args.get("path", ".")) if fn=="list_files" else read_file(args.get("path", "")) if fn=="read_file" else query_api(args.get("method", "GET"), args.get("path", "/"), args.get("body")) if fn=="query_api" else "Error"
+                res = list_files(args.get("path", ".")) if fn=="list_files" else \
+                      read_file(args.get("path", "")) if fn=="read_file" else \
+                      query_api(args.get("method", "GET"), args.get("path", "/"), args.get("body")) if fn=="query_api" else "Error"
                 hist.append({"tool": fn, "args": args, "result": str(res)})
                 msgs.append({"tool_call_id": tc.id, "role": "tool", "name": fn, "content": str(res)})
         except Exception as e:

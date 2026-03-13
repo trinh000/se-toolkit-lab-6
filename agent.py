@@ -150,7 +150,8 @@ def main():
                 "2. For source code, search in the 'backend/' directory (e.g., 'backend/app/main.py'). "
                 "3. For data-dependent or live system questions, use `query_api`. "
                 "4. For bug diagnosis, query the API, read the error message, and then inspect the relevant source code files. "
-                "CRITICAL: To answer precisely, you MUST first `list_files` to find the correct file and then `read_file` to get the content. "
+                "CRITICAL: ALWAYS use `list_files` first to explore directories, and then `read_file` to read the content. "
+                "DO NOT provide an answer without using `read_file` on a relevant file if the question is about specific content. "
                 "Your final response MUST BE ONLY A JSON OBJECT. NO MARKDOWN, NO EXPLANATIONS. "
                 "Format: {\"answer\": \"your concise answer here\", \"source\": \"wiki/filename.md#section-anchor\"}"
             )

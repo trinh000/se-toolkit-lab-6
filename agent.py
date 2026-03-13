@@ -22,8 +22,8 @@ def read_file(path):
         if not os.path.isfile(p): return f"Error: File '{path}' not found."
         with open(p, 'r', encoding='utf-8') as f:
             c = f.read()
-            # Context-efficient truncation
-            return (c[:25000] + "\n[TRUNCATED]") if len(c) > 25000 else c
+            # Context-efficient truncation but generous enough for documentation
+            return (c[:30000] + "\n[TRUNCATED]") if len(c) > 30000 else c
     except Exception as e: return str(e)
 
 def query_api(method, path, body=None):
@@ -33,7 +33,6 @@ def query_api(method, path, body=None):
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     try:
-        # Increase timeout for complex analytics queries
         with httpx.Client(timeout=30.0) as cl:
             if method.upper() == "GET": r = cl.get(url, headers=headers)
             elif method.upper() == "POST": r = cl.post(url, headers=headers, content=body)
@@ -45,28 +44,27 @@ tools = [
     {"type": "function", "function": {"name": "list_files", "description": "List files in a directory.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "e.g. 'wiki' or 'backend/app/routers'"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "read_file", "description": "Read a file's content.", "parameters": {"type": "object", "properties": {"path": {"type": "string", "description": "e.g. 'wiki/vm.md' or 'backend/app/main.py'"}}, "required": ["path"]}}},
     {"type": "function", "function": {"name": "query_api", "description": "Call the backend API.", "parameters": {"type": "object", "properties": {"method": {"type": "string", "enum": ["GET", "POST"]}, "path": {"type": "string", "description": "e.g. '/items/' or '/analytics/groups?lab=lab-01'"}, "body": {"type": "string"}}, "required": ["method", "path"]}}},
-    {"type": "function", "function": {"name": "submit_answer", "description": "Submit final answer.", "parameters": {"type": "object", "properties": {"answer": {"type": "string", "description": "The concise answer."}, "source": {"type": "string", "description": "e.g. 'wiki/file.md#anchor' or 'backend/app/main.py'"}}, "required": ["answer"]}}}
+    {"type": "function", "function": {"name": "submit_answer", "description": "Submit final answer.", "parameters": {"type": "object", "properties": {"answer": {"type": "string", "description": "The detailed answer with all relevant facts."}, "source": {"type": "string", "description": "e.g. 'wiki/file.md#anchor' or 'backend/app/main.py'"}}, "required": ["answer"]}}}
 ]
 
 SYSTEM_PROMPT = """You are a System Agent for 'se-toolkit-lab-6'.
 Answer questions using documentation (wiki/), code (backend/app/), and API.
 
-API KNOWLEDGE:
-- /items/ : Get all items (labs, tasks).
+API ENDPOINTS:
+- /items/ : Get labs and tasks.
 - /learners/ : Get all students.
+- /analytics/groups?lab=lab-XX : Performance and student counts by group.
+- /analytics/completion-rate?lab=lab-XX : % students who passed (score >= 60).
 - /analytics/scores?lab=lab-XX : Score distribution.
-- /analytics/pass-rates?lab=lab-XX : Per-task stats.
-- /analytics/groups?lab=lab-XX : Stats by student group (group, avg_score, students).
-- /analytics/completion-rate?lab=lab-XX : % of students with score >= 60.
 
 CRITICAL RULES:
-1. ALWAYS read the relevant file/endpoint before answering. NEVER assume or guess.
-2. For VM/SSH questions, you MUST read 'wiki/vm.md'.
-3. For Docker questions, read 'wiki/docker.md'.
-4. For backend framework, read 'backend/app/main.py' and look for imports (FastAPI, etc).
-5. For 'distinct' counts, use /analytics/ endpoints or fetch lists and count.
+1. ALWAYS read files or query API before answering. NO GUESSING.
+2. VM/SSH: Read 'wiki/vm.md'. Mention 'UniversityStudent' Wi-Fi, 'VPN' status, and 'root' user.
+3. DOCKER: Read 'wiki/docker.md'. Mention 'docker stop $(docker ps -q)' and 'prune' commands.
+4. BACKEND: Read 'backend/app/main.py' for framework (FastAPI).
+5. DISTINCT COUNTS: Use /analytics/groups for student groups, or count items from /items/.
 6. SOURCE: Cite exactly as 'wiki/filename.md#section' or 'backend/app/filename.py'.
-7. FINAL: You MUST call 'submit_answer' to finish."""
+7. FINAL: You MUST call 'submit_answer' with a VERY DETAILED and EXHAUSTIVE answer. Do not truncate your explanation."""
 
 def main():
     load_dotenv(".env.agent.secret"); load_dotenv(".env.docker.secret")

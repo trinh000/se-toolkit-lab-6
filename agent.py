@@ -48,20 +48,22 @@ def main():
     cl = OpenAI(api_key=os.getenv("LLM_API_KEY"), base_url=os.getenv("LLM_API_BASE"))
     m = os.getenv("LLM_MODEL", "qwen3-coder-plus")
     q = sys.argv[1] if len(sys.argv) > 1 else "Hi"
-    msgs = [{"role": "system", "content": "You are a System Agent. ALWAYS use tools to find info. DO NOT guess. To answer, you MUST return a JSON object with 'answer' and 'source' (e.g. 'wiki/git.md#anchor'). Use 'unknown' if no source. No other text."}, {"role": "user", "content": q}]
+    msgs = [{"role": "system", "content": "You are a System Agent. ALWAYS use tools to find info. DO NOT guess. To answer, you MUST return ONLY a JSON object with 'answer' and 'source' (e.g. 'wiki/git.md#anchor' or 'backend/app/main.py'). No other text."}, {"role": "user", "content": q}]
     hist = []
     for _ in range(10):
         resp = cl.chat.completions.create(model=m, messages=msgs, tools=tools)
         msg = resp.choices[0].message
         if not msg.tool_calls:
-            try:
-                txt = msg.content or ""
-                s, e = txt.find('{'), txt.rfind('}')
-                if s != -1 and e != -1:
-                    d = json.loads(txt[s:e+1])
-                    print(json.dumps({"answer": d.get("answer"), "source": d.get("source", "unknown"), "tool_calls": hist}))
-                else: print(json.dumps({"answer": txt, "source": "unknown", "tool_calls": hist}))
-            except: print(json.dumps({"answer": msg.content, "source": "unknown", "tool_calls": hist}))
+            content = msg.content or ""
+            start = content.find('{')
+            end = content.rfind('}')
+            if start != -1 and end != -1:
+                try:
+                    data = json.loads(content[start:end+1])
+                    print(json.dumps({"answer": data.get("answer"), "source": data.get("source", "unknown"), "tool_calls": hist}))
+                    return
+                except: pass
+            print(json.dumps({"answer": content, "source": "unknown", "tool_calls": hist}))
             return
         msgs.append(msg)
         for tc in msg.tool_calls:

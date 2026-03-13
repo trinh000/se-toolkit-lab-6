@@ -30,7 +30,11 @@ def read_file(path):
         if not os.path.isfile(abs_path):
             return f"Error: File '{path}' not found."
         with open(abs_path, 'r', encoding='utf-8') as f:
-            return f.read()
+            content = f.read()
+            # Truncate if too large to avoid context blowing up, but keep enough for answers
+            if len(content) > 10000:
+                return content[:10000] + "\n\n[Content truncated...]"
+            return content
     except Exception as e:
         return f"Error: {e}"
 

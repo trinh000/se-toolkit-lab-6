@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import httpx
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -33,13 +34,47 @@ def read_file(path):
     except Exception as e:
         return f"Error: {e}"
 
+def query_api(method, path, body=None):
+    base_url = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
+    api_key = os.getenv("LMS_API_KEY")
+    
+    if not api_key:
+        return "Error: LMS_API_KEY not set in environment."
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+    
+    try:
+        with httpx.Client() as client:
+            if method.upper() == "GET":
+                response = client.get(url, headers=headers)
+            elif method.upper() == "POST":
+                response = client.post(url, headers=headers, content=body)
+            elif method.upper() == "PUT":
+                response = client.put(url, headers=headers, content=body)
+            elif method.upper() == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return f"Error: Unsupported HTTP method '{method}'."
+            
+            return json.dumps({
+                "status_code": response.status_code,
+                "body": response.text
+            })
+    except Exception as e:
+        return f"Error calling API: {e}"
+
 # Tool definitions for OpenAI
 tools = [
     {
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files and directories at a given path relative to the project root.",
+            "description": "List files and directories at a given path relative to the project root. Useful for discovering documentation in 'wiki/' or source code in 'backend/'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -53,7 +88,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the content of a file given its relative path from the project root.",
+            "description": "Read the content of a file given its relative path from the project root. Use this to find answers in documentation or to inspect source code for system facts.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -62,18 +97,36 @@ tools = [
                 "required": ["path"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_api",
+            "description": "Call the project's backend API to retrieve real-time system data, analytics, or perform actions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"], "description": "The HTTP method to use."},
+                    "path": {"type": "string", "description": "The API endpoint path (e.g., '/items/')."},
+                    "body": {"type": "string", "description": "Optional JSON request body as a string."}
+                },
+                "required": ["method", "path"]
+            }
+        }
     }
 ]
 
 def main():
+    # Load environment variables for local development
     load_dotenv(".env.agent.secret")
+    load_dotenv(".env.docker.secret")
     
     api_key = os.getenv("LLM_API_KEY")
     api_base = os.getenv("LLM_API_BASE")
     model = os.getenv("LLM_MODEL", "qwen3-coder-plus")
     
     if not api_key or not api_base:
-        print("Error: LLM_API_KEY or LLM_API_BASE not set in .env.agent.secret", file=sys.stderr)
+        print("Error: LLM_API_KEY or LLM_API_BASE not set.", file=sys.stderr)
         sys.exit(1)
         
     if len(sys.argv) < 2:
@@ -88,11 +141,12 @@ def main():
         {
             "role": "system", 
             "content": (
-                "You are a Documentation Agent. Your goal is to answer questions about the project using the wiki. "
-                "Use `list_files('wiki')` to discover documentation files and `read_file` to read their content. "
-                "Always provide a concise answer and cite your source exactly as 'wiki/filename.md#section-anchor'. "
-                "If you can't find the answer, say you don't know and don't cite a source. "
-                "Your final response to the user must be a JSON object with 'answer' and 'source' fields."
+                "You are a System Agent. Your goal is to answer questions about the project using documentation, source code, and the live API. "
+                "- For documentation or code questions, use `list_files` and `read_file`. "
+                "- For data-dependent or live system questions, use `query_api`. "
+                "- For bug diagnosis, query the API, read the error message, and then inspect the relevant source code files. "
+                "Always provide a concise answer. If you used a file from the wiki, cite your source as 'wiki/filename.md#section-anchor'. "
+                "Your final response must be a JSON object with 'answer' and 'source' (optional) fields."
             )
         },
         {"role": "user", "content": question}
@@ -100,7 +154,7 @@ def main():
     
     all_tool_calls_history = []
     
-    for _ in range(10):  # Maximum 10 tool calls
+    for _ in range(10):
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -113,11 +167,8 @@ def main():
             tool_calls = response_message.tool_calls
             
             if not tool_calls:
-                # Final answer from LLM
-                content = response_message.content
-                # Attempt to parse the content as JSON to extract answer and source
+                content = response_message.content or ""
                 try:
-                    # Clean up the LLM's response if it wrapped JSON in markdown code blocks
                     json_str = content.strip()
                     if json_str.startswith("```json"):
                         json_str = json_str[len("```json"):].strip()
@@ -126,20 +177,21 @@ def main():
                     
                     final_data = json.loads(json_str)
                     answer = final_data.get("answer", content)
-                    source = final_data.get("source", "unknown")
+                    source = final_data.get("source")
                 except:
                     answer = content
-                    source = "unknown"
+                    source = None
                 
                 output = {
                     "answer": answer,
-                    "source": source,
                     "tool_calls": all_tool_calls_history
                 }
+                if source:
+                    output["source"] = source
+                    
                 print(json.dumps(output))
                 return
             
-            # Execute tool calls
             messages.append(response_message)
             
             for tool_call in tool_calls:
@@ -150,6 +202,12 @@ def main():
                     result = list_files(function_args.get("path"))
                 elif function_name == "read_file":
                     result = read_file(function_args.get("path"))
+                elif function_name == "query_api":
+                    result = query_api(
+                        function_args.get("method"),
+                        function_args.get("path"),
+                        function_args.get("body")
+                    )
                 else:
                     result = f"Error: Tool '{function_name}' not found."
                 
@@ -170,10 +228,8 @@ def main():
             print(f"Error in agent loop: {e}", file=sys.stderr)
             sys.exit(1)
             
-    # If we reached 10 calls without a final answer
     print(json.dumps({
         "answer": "Reached maximum tool calls without finding a definitive answer.",
-        "source": "unknown",
         "tool_calls": all_tool_calls_history
     }))
 

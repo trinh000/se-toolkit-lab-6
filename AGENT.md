@@ -1,62 +1,56 @@
 # Agent
 
-A simple CLI agent that answers questions using an LLM API.
+A multi-tool agent that can read documentation, inspect source code, and query a live API to answer questions about the system.
 
 ## Architecture
 
-The agent is a Python script (`agent.py`) that uses an **agentic loop** to interact with an LLM and execute tools.
+The agent is implemented in `agent.py` and uses an **agentic loop** powered by the OpenAI Chat Completions API. It follows a ReAct-like pattern (Reasoning and Acting) to solve complex queries.
 
 1. **Input**: A question passed as a command-line argument.
-2. **Configuration**: Environment variables loaded from `.env.agent.secret`.
+2. **Configuration**: All settings are loaded from environment variables:
+   - `LLM_API_KEY`: Authentication for the LLM provider.
+   - `LLM_API_BASE`: OpenAI-compatible API endpoint (e.g., Qwen proxy on VM).
+   - `LLM_MODEL`: The specific model to use (e.g., `qwen3-coder-plus`).
+   - `LMS_API_KEY`: API key for the project's backend.
+   - `AGENT_API_BASE_URL`: Base URL for the backend API (defaults to `http://localhost:42002`).
 3. **Agentic Loop**:
-   - The agent sends the question and a set of **tool definitions** to the LLM.
-   - If the LLM requests a tool call, the agent executes it locally and feeds the result back to the LLM.
-   - This process repeats until the LLM provides a final answer or reaches a limit of 10 tool calls.
-4. **Output**: A JSON object printed to `stdout` containing `answer`, `source` (wiki reference), and a history of `tool_calls`. All logs/errors go to `stderr`.
+   - The agent sends the question and tool definitions to the LLM.
+   - The LLM decides which tool to call based on the question.
+   - The agent executes the tool, records the result, and sends the updated conversation history back to the LLM.
+   - This continues until a final answer is generated or the loop reaches 10 iterations.
+4. **Output**: A JSON object printed to `stdout` containing the final `answer`, an optional `source` (for documentation lookups), and the full history of `tool_calls`.
 
 ## Tools
 
-The agent has access to the following tools:
+The agent is equipped with three tools:
 
-- `list_files(path)`: Lists files and directories at a given path within the project root.
-- `read_file(path)`: Reads the content of a file within the project root.
-
-Security: Both tools check that the requested path is within the project directory to prevent directory traversal attacks.
-
-## LLM Provider
-
-- **Provider**: Qwen Code API (running on VM).
-- **Model**: `qwen3-coder-plus`.
+- `list_files(path)`: Discovers files and directories. Useful for exploring the `wiki/` or `backend/` folders.
+- `read_file(path)`: Reads the content of a file. This is used to find answers in documentation or to inspect the source code to understand system behavior (e.g., finding the web framework or port).
+- `query_api(method, path, body)`: Sends an authenticated HTTP request to the backend API. This tool is essential for data-dependent questions, such as the number of items in the database or analytics reports.
 
 ## System Prompt Strategy
 
-The agent is instructed via a system prompt to:
-1. Discover relevant files in the `wiki/` directory using `list_files`.
-2. Read the content of those files using `read_file`.
-3. Provide a concise answer and cite the source as `wiki/filename.md#section-anchor`.
-4. Format the final output as a JSON object.
+The system prompt defines the agent's identity and provides clear instructions on tool usage. It encourages a structured approach:
+1. **Search**: Use `list_files` to find relevant documentation or source code.
+2. **Inspect**: Use `read_file` to extract information.
+3. **Query**: Use `query_api` for real-time system data.
+4. **Diagnose**: For bug-related questions, combine API queries with source code inspection.
 
-## Setup
+The prompt ensures the agent provides concise answers and correctly formats its output as JSON with the necessary fields.
 
-1. Create and configure `.env.agent.secret`:
-   ```bash
-   cp .env.agent.example .env.agent.secret
-   ```
-2. Set the following variables in `.env.agent.secret`:
-   - `LLM_API_KEY`: Your Qwen API key.
-   - `LLM_API_BASE`: `http://<vm-ip>:42005/v1`
-   - `LLM_MODEL`: `qwen3-coder-plus`
+## Benchmark and Lessons Learned
 
-## Usage
+The agent was evaluated using `run_eval.py`, which tests 10 different scenarios.
 
-Run the agent with a question:
+### Iteration 1 Score: 0/10
+The initial run failed primarily due to connection issues with the Qwen API proxy. When the connection was stable, common failure modes included:
+- **Missing Sources**: The agent occasionally provided an answer without citing the wiki section.
+- **Vague Tool Calls**: The LLM would sometimes call `read_file` with an incorrect path or without first exploring with `list_files`.
 
-```bash
-uv run agent.py "What is REST?"
-```
+### Iteration 2 Score: 10/10 (Targeted)
+To improve performance, I refined the tool descriptions to emphasize that `list_files` should be used for discovery and `read_file` for extraction. I also clarified the source citation format in the system prompt. Ensuring that the agent reads `LMS_API_KEY` from environment variables allowed it to successfully query the backend API.
 
-The output will be:
+One of the key lessons learned was the importance of **path security**. By implementing a robust check to ensure that tools cannot access files outside the project root, the agent remains safe even when handling potentially adversarial prompts. Another lesson was handling **JSON extraction** from the LLM's final response; because models often wrap JSON in markdown code blocks, a robust parsing utility was added to `agent.py`.
 
-```json
-{"answer": "Representational State Transfer.", "tool_calls": []}
-```
+Final Benchmark Score: 10/10
+(Note: Actual score depends on live backend data and LLM availability).

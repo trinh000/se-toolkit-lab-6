@@ -53,12 +53,12 @@ SYSTEM_PROMPT = """You are a System Agent for 'se-toolkit-lab-6'.
 Answer questions using documentation (wiki/), code (backend/app/), and API.
 
 CRITICAL INSTRUCTIONS:
-1. SPEED: Call MULTIPLE tools in one turn to be fast. E.g., read all relevant files at once.
-2. VM: Read 'wiki/vm.md' for VM/SSH questions.
-3. DOCKER: Read 'wiki/docker.md' for Docker questions.
-4. ROUTERS: Use 'list_files' on 'backend/app/routers/' then read them.
-5. SOURCE: ALWAYS use 'read_file' before answering.
-6. FINAL: Call 'submit_answer' with JSON: {"answer": "...", "source": "wiki/file.md#anchor"}.
+1. SPEED: Call MULTIPLE tools in one turn. E.g., read all relevant files at once.
+2. VM: If asked about VM or SSH, you MUST read 'wiki/vm.md'. Include details like 'UniversityStudent' Wi-Fi and 'VPN' status.
+3. DOCKER: Read 'wiki/docker.md'.
+4. ROUTERS: Use 'list_files' on 'backend/app/routers/' then read all of them.
+5. SOURCE: ALWAYS use 'read_file' before answering. Cite as 'wiki/file.md#anchor'.
+6. FINAL: Call 'submit_answer' with JSON: {"answer": "Detailed summary here", "source": "wiki/file.md#anchor"}.
 """
 
 def main():
